@@ -24,6 +24,7 @@
 
 // Contains the chip identification number chip_id[7:0] which is 0x60
 #define BME280_REGISTER_ID 0xD0
+#define BME280_CHIP_ID     0x60
 
 // Contains the soft reset word reset[7:0].
 // If the value 0xB6 is written to the register,
