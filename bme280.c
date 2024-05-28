@@ -1,3 +1,5 @@
+// Copyright (C) 2024 Aleksei Rogov <alekzzzr@gmail.com>. All rights reserved.
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
@@ -7,8 +9,6 @@
 #include <linux/i2c.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
-#include <asm/div64.h>
-#include <linux/math64.h>
 #include "bme280.h"
 
 #define DRIVER_NAME "bme280"
@@ -62,12 +62,17 @@ static int32_t bme280_read_compensate_temperature_int32(void) {
     int32_t d1, d2, d3;
 
     // Read temperature register
-    d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_MSB);
-    d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_LSB);
-    d3 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_XLSB);
-    if((d1 == 0x80 && d2 == 0x0 && d3 == 0x0) | (d1 < 0 || d2 < 0 || d3 < 0)) {
-        return 0;
+    if((d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_MSB)) < 0
+        || (d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_LSB)) < 0
+        || (d3 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_TEMP_XLSB)) < 0) {
+        return BUS_ERROR;
     }
+
+    // Temperature register contains reset values
+    if(d1 == 0x80 && d2 == 0x0 && d3 == 0x0) {
+        return INCORRECT_TEMPERATURE;
+    }
+
     adc_T = (d1 << 12) | (d2 << 4) | (d3 >> 4);
 
     // Calculate temperature according the "4.2.3 Compensation formulas"
@@ -82,16 +87,22 @@ static int32_t bme280_read_compensate_temperature_int32(void) {
 
 // Returns pressure in Pa as unsigned 32 bit integer.
 // Output value of “96386” equals 96386 Pa = 963.86 hPa
-static uint32_t bme280_read_compensate_pressure_int32(void) {
+static int32_t bme280_read_compensate_pressure_int32(void) {
     uint32_t p;
     int32_t adc_P, d1, d2, d3, var1, var2;
 
-    d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_MSB);
-    d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_LSB);
-    d3 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_XLSB);
-    if((d1 == 0x80 && d2 == 0x0 && d3 == 0x0) || (d1 < 0 || d2 < 0 || d3 <0)) {
-        return 0;
+    // Read pressure register
+    if((d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_MSB)) < 0
+        || (d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_LSB)) < 0
+        || (d3 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_PRESS_XLSB)) < 0) {
+        return BUS_ERROR;
     }
+
+    // Pressure register contains reset values
+    if(d1 == 0x80 && d2 == 0x0 && d3 == 0x0) {
+        return INCORRECT_PRESSURE;
+    }
+
     adc_P = (d1 << 12) | (d2 << 4) | (d3 >> 4);
 
     var1 = (((int32_t)t_fine) >> 1) - (int32_t)64000;
@@ -121,14 +132,19 @@ static uint32_t bme280_read_compensate_pressure_int32(void) {
 
 // Returns humidity in %RH as unsigned 32 bit integer in Q22.10 format (22 integer and 10fractional bits).
 // Output value of “47445” represents 47445/1024 = 46.333 %RH
-static uint32_t bme280_read_compensate_humidity_int32(void) {
+static int32_t bme280_read_compensate_humidity_int32(void) {
     int32_t v_x1_u32r, adc_H;
     int32_t d1, d2;
 
-    d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_HUM_MSB);
-    d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_HUM_LSB);
-    if((d1 == 0x80 && d2 == 0x0) || (d1 < 0 || d2 < 0)) {
-        return 0;
+    // Read humidity register
+    if((d1 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_HUM_MSB)) < 0
+        || (d2 = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_HUM_LSB)) < 0) {
+        return BUS_ERROR;
+    }
+
+    // Humidity register contains reset values
+    if(d1 == 0x80 && d2 == 0x0) {
+        return INCORRECT_HUMIDITY;
     }
 
     adc_H = (d1 << 8) | d2;
@@ -149,11 +165,11 @@ static int init_sensor(void) {
     int8_t id;
 
     if((id = i2c_smbus_read_byte_data(bme280_i2c_client, BME280_REGISTER_ID)) < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     if(id != BME280_CHIP_ID) {
         printk(KERN_ERR "bme280: chip id should be %d not %d\n", BME280_CHIP_ID, id);
-        return -1;
+        return CHIP_ID_ERROR;
     }
 
     printk(KERN_DEFAULT "bme280: sensor detected on i2c-%d at address 0x%x\n", i2c_bus, i2c_addr);
@@ -161,93 +177,93 @@ static int init_sensor(void) {
     uint32_t ret;
     bme280_calibration_t.dig_T1 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_T1);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_T2 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_T2);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_T3 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_T3);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P1 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P1);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P2 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P2);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P3 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P3);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P4 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P4);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P5 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P5);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P6 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P6);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P7 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P7);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P8 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P8);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_P9 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_P9);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H1 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H1);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H2 = ret = i2c_smbus_read_word_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H2);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H3 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H3);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H4 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H4);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H5 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H5);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H6 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H5 + 1);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
     bme280_calibration_t.dig_H4 = (bme280_calibration_t.dig_H4 << 4) | (bme280_calibration_t.dig_H5 & 0xF);
     bme280_calibration_t.dig_H5 = (bme280_calibration_t.dig_H6 << 4) | ((bme280_calibration_t.dig_H5 >> 4) & 0xF);
 
     bme280_calibration_t.dig_H6 = ret = i2c_smbus_read_byte_data(bme280_i2c_client, CALIBRATION_REGISTER_DIG_H6);
     if(ret < 0) {
-        return -1;
+        return BUS_ERROR;
     }
 
     // Initialize device
     if(i2c_smbus_write_byte_data(bme280_i2c_client, BME280_REGISTER_CTRL_HUM, BME280_OSRS_H_1) != 0) {
-        return -1;
+        return BUS_ERROR;
     }
     if(i2c_smbus_write_byte_data(bme280_i2c_client, BME280_REGISTER_CTRL_MEAS, BME280_OSRS_MODE_NORMAL | BME280_OSRS_P_1 | BME280_OSRS_T_1) != 0) {
-        return -1;
+        return BUS_ERROR;
     }
     if(i2c_smbus_write_byte_data(bme280_i2c_client, BME280_REGISTER_CONFIG, BME280_T_SB_1000) != 0) {
-        return -1;
+        return BUS_ERROR;
     }
 
     printk(KERN_DEFAULT "bme280: id: 0x%X, callibrations: {H1: %d, H2: %d, H3: %d, H4: %d, H5: %d, H6: %d}\n", id, bme280_calibration_t.dig_H1, bme280_calibration_t.dig_H2,\
@@ -264,14 +280,19 @@ static ssize_t driver_read(struct file *fd, char *user_buffer, size_t count, lof
 
     to_copy = min(sizeof(buff), count);
 
-    temperature = bme280_read_compensate_temperature_int32();
-    pressure = bme280_read_compensate_pressure_int32();
-    humidity = bme280_read_compensate_humidity_int32();
-    if(temperature == 0 && pressure == 0 && humidity == 0) {
+    if((temperature = bme280_read_compensate_temperature_int32()) == BUS_ERROR
+       || (pressure = bme280_read_compensate_pressure_int32()) == BUS_ERROR
+       || (humidity = bme280_read_compensate_humidity_int32()) == BUS_ERROR ) {
+        temperature = pressure = humidity = 0;
+        printk(KERN_ERR "bme280: bus error occured\n");
+    }
+
+    if(temperature == INCORRECT_TEMPERATURE && pressure == INCORRECT_PRESSURE && humidity == INCORRECT_HUMIDITY) {
         printk(KERN_WARNING "bme280: reinitialize sensor\n");
         if(init_sensor() != 0) {
-            return 0;
+            printk(KERN_ERR "bme280: can't reinitialize sensor\n");
         }
+        temperature = pressure = humidity = 0;
     }
 
     bytes = snprintf(buff, sizeof(buff), "{\"temperature\": %d.%d, \"pressure\": %d, \"humidity\": %d.%d}\n",\

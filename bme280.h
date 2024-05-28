@@ -1,3 +1,12 @@
+// Copyright (C) 2024 Aleksei Rogov <alekzzzr@gmail.com>. All rights reserved.
+
+// Incorrect values
+#define INCORRECT_TEMPERATURE (-100)
+#define INCORRECT_PRESSURE    (-200)
+#define INCORRECT_HUMIDITY    (-300)
+#define BUS_ERROR             (-400)
+#define CHIP_ID_ERROR         (-500)
+
 // Temperature calibration registers
 #define CALIBRATION_REGISTER_DIG_T1 0x88
 #define CALIBRATION_REGISTER_DIG_T2 0x8A
